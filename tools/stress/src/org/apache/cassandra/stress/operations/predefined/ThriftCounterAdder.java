@@ -24,6 +24,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.cassandra.stress.StressAction;
 import org.apache.cassandra.stress.generate.Distribution;
 import org.apache.cassandra.stress.generate.DistributionFactory;
 import org.apache.cassandra.stress.generate.PartitionGenerator;
@@ -73,6 +74,7 @@ public class ThriftCounterAdder extends PredefinedOperation
             @Override
             public boolean run() throws Exception
             {
+            	StressAction.acquireRateLimiter(1);
                 client.batch_mutate(record, settings.command.consistencyLevel);
                 return true;
             }

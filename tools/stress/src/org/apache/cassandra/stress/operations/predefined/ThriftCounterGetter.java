@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.List;
 
+import org.apache.cassandra.stress.StressAction;
 import org.apache.cassandra.stress.generate.PartitionGenerator;
 import org.apache.cassandra.stress.generate.SeedManager;
 import org.apache.cassandra.stress.settings.Command;
@@ -46,6 +47,7 @@ public class ThriftCounterGetter extends PredefinedOperation
             @Override
             public boolean run() throws Exception
             {
+            	StressAction.acquireRateLimiter(1);
                 List<?> r = client.get_slice(key, new ColumnParent(type.table), predicate, settings.command.consistencyLevel);
                 return r != null && r.size() > 0;
             }

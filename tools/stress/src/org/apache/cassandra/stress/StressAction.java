@@ -22,6 +22,7 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -42,6 +43,7 @@ public class StressAction implements Runnable
 
     private final StressSettings settings;
     private final PrintStream output;
+    public static Optional<RateLimiter> rowRateLimiter = Optional.<RateLimiter>empty();
 
     public StressAction(StressSettings settings, PrintStream out)
     {
@@ -67,12 +69,14 @@ public class StressAction implements Runnable
         if (settings.rate.opRateTargetPerSecond > 0)
             rateLimiter = RateLimiter.create(settings.rate.opRateTargetPerSecond);
 
+        rowRateLimiter = Optional.ofNullable(rateLimiter);
+        
         boolean success;
         if (settings.rate.minThreads > 0)
-            success = runMulti(settings.rate.auto, rateLimiter);
+            success = runMulti(settings.rate.auto);
         else
             success = null != run(settings.command.getFactory(settings), settings.rate.threadCount, settings.command.count,
-                                  settings.command.duration, rateLimiter, settings.command.durationUnits, output);
+                                  settings.command.duration, settings.command.durationUnits, output);
 
         if (success)
             output.println("END");
@@ -102,13 +106,13 @@ public class StressAction implements Runnable
             // we need to warm up all the nodes in the cluster ideally, but we may not be the only stress instance;
             // so warm up all the nodes we're speaking to only.
             output.println(String.format("Warming up %s with %d iterations...", single.desc(), iterations));
-            run(single, threads, iterations, 0, null, null, warmupOutput);
+            run(single, threads, iterations, 0, null, warmupOutput);
         }
     }
 
     // TODO : permit varying more than just thread count
     // TODO : vary thread count based on percentage improvement of previous increment, not by fixed amounts
-    private boolean runMulti(boolean auto, RateLimiter rateLimiter)
+    private boolean runMulti(boolean auto)
     {
         if (settings.command.targetUncertainty >= 0)
             output.println("WARNING: uncertainty mode (err<) results in uneven workload between thread runs, so should be used for high level analysis only");
@@ -124,7 +128,7 @@ public class StressAction implements Runnable
                 settings.command.truncateTables(settings);
 
             StressMetrics result = run(settings.command.getFactory(settings), threadCount, settings.command.count,
-                                       settings.command.duration, rateLimiter, settings.command.durationUnits, output);
+                                       settings.command.duration, settings.command.durationUnits, output);
             if (result == null)
                 return false;
             results.add(result);
@@ -181,7 +185,7 @@ public class StressAction implements Runnable
         return improvement / count;
     }
 
-    private StressMetrics run(OpDistributionFactory operations, int threadCount, long opCount, long duration, RateLimiter rateLimiter, TimeUnit durationUnits, PrintStream output)
+    private StressMetrics run(OpDistributionFactory operations, int threadCount, long opCount, long duration, TimeUnit durationUnits, PrintStream output)
     {
         output.println(String.format("Running %s with %d threads %s",
                                      operations.desc(),
@@ -201,7 +205,7 @@ public class StressAction implements Runnable
         final Consumer[] consumers = new Consumer[threadCount];
         for (int i = 0; i < threadCount; i++)
         {
-            consumers[i] = new Consumer(operations, done, workManager, metrics, rateLimiter,
+            consumers[i] = new Consumer(operations, done, workManager, metrics,
                                         settings.samples.liveCount / threadCount);
         }
 
@@ -254,16 +258,14 @@ public class StressAction implements Runnable
 
         private final OpDistribution operations;
         private final StressMetrics metrics;
-        private final RateLimiter rateLimiter;
         private volatile boolean success = true;
         private final WorkManager workManager;
         private final CountDownLatch done;
 
         public Consumer(OpDistributionFactory operations, CountDownLatch done, WorkManager workManager, StressMetrics metrics,
-                        RateLimiter rateLimiter, int sampleCount)
+                        int sampleCount)
         {
             this.done = done;
-            this.rateLimiter = rateLimiter;
             this.workManager = workManager;
             this.metrics = metrics;
             this.operations = operations.get(metrics.getTiming(), sampleCount);
@@ -298,7 +300,7 @@ public class StressAction implements Runnable
                 while (true)
                 {
                     Operation op = operations.next();
-                    if (!op.ready(workManager, rateLimiter))
+                    if (!op.ready(workManager))
                         break;
 
                     try
@@ -340,5 +342,13 @@ public class StressAction implements Runnable
                 operations.closeTimers();
             }
         }
+    }
+    
+    public static void acquireRateLimiter(int permits)
+    {
+    	if(rowRateLimiter.isPresent())
+    	{
+    		rowRateLimiter.get().acquire(permits);
+    	}
     }
 }

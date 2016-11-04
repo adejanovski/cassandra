@@ -50,6 +50,8 @@ import org.apache.cassandra.stress.util.ThriftClient;
 import org.apache.cassandra.stress.util.Timer;
 import org.apache.cassandra.thrift.Compression;
 import org.apache.cassandra.thrift.ThriftConversion;
+import org.apache.commons.math3.distribution.UniformRealDistribution;
+import org.apache.commons.math3.random.JDKRandomGenerator;
 import org.apache.thrift.TException;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
@@ -276,6 +278,8 @@ public class StressProfile implements Serializable
 
     public SchemaInsert getInsert(Timer timer, PartitionGenerator generator, SeedManager seedManager, StressSettings settings)
     {
+    	Distribution batchSizes = new DistributionBoundApache(new UniformRealDistribution((double)1, (double)2), 1, 1);
+        ;
         if (insertStatement == null)
         {
             synchronized (this)
@@ -359,6 +363,7 @@ public class StressProfile implements Serializable
                                       minBatchSize, maxBatchSize,
                                       partitions.get().minValue() * generator.minRowCount,
                                       partitions.get().maxValue() * generator.maxRowCount);
+                    batchSizes = new DistributionBoundApache(new UniformRealDistribution(minBatchSize, maxBatchSize + 1), (int) minBatchSize, (int) maxBatchSize);
                     if (generator.maxRowCount > 100 * 1000 * 1000)
                         System.err.printf("WARNING: You have defined a schema that permits very large partitions (%.0f max rows (>100M))\n", generator.maxRowCount);
                     if (batchType == BatchStatement.Type.LOGGED && maxBatchSize > 65535)
@@ -386,7 +391,8 @@ public class StressProfile implements Serializable
             }
         }
 
-        return new SchemaInsert(timer, settings, generator, seedManager, partitions.get(), selectchance.get(), thriftInsertId, insertStatement, ThriftConversion.fromThrift(settings.command.consistencyLevel), batchType);
+         
+        return new SchemaInsert(timer, settings, generator, seedManager, batchSizes, selectchance.get(), thriftInsertId, insertStatement, ThriftConversion.fromThrift(settings.command.consistencyLevel), batchType);
     }
 
     public List<ValidatingSchemaQuery> getValidate(Timer timer, PartitionGenerator generator, SeedManager seedManager, StressSettings settings)

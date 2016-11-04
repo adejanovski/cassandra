@@ -25,12 +25,16 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Random;
 
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ResultSet;
+import com.google.common.util.concurrent.RateLimiter;
+
 import org.apache.cassandra.db.ConsistencyLevel;
+import org.apache.cassandra.stress.StressAction;
 import org.apache.cassandra.stress.generate.*;
 import org.apache.cassandra.stress.settings.StressSettings;
 import org.apache.cassandra.stress.util.JavaDriverClient;
@@ -69,6 +73,7 @@ public class SchemaQuery extends SchemaStatement
 
         public boolean run() throws Exception
         {
+        	StressAction.acquireRateLimiter(1);
             ResultSet rs = client.getSession().execute(bindArgs());
             rowCount = rs.all().size();
             partitionCount = Math.min(1, rowCount);
@@ -87,6 +92,7 @@ public class SchemaQuery extends SchemaStatement
 
         public boolean run() throws Exception
         {
+        	StressAction.acquireRateLimiter(1);
             CqlResult rs = client.execute_prepared_cql3_query(thriftId, partitions.get(0).getToken(), thriftArgs(), ThriftConversion.toThrift(cl));
             rowCount = rs.getRowsSize();
             partitionCount = Math.min(1, rowCount);

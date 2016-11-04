@@ -29,6 +29,8 @@ import com.google.common.base.Function;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
+
+import org.apache.cassandra.stress.StressAction;
 import org.apache.cassandra.stress.generate.PartitionGenerator;
 import org.apache.cassandra.stress.generate.SeedManager;
 import org.apache.cassandra.stress.settings.Command;
@@ -228,6 +230,7 @@ public abstract class CqlOperation<V> extends PredefinedOperation
         @Override
         public boolean run() throws Exception
         {
+        	StressAction.acquireRateLimiter(1);
             return queryId != null
             ? validate(result = client.execute(queryId, key, params, handler))
             : validate(result = client.execute(query, key, params, handler));
