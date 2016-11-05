@@ -28,7 +28,7 @@ import java.util.List;
 import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
-import com.datastax.driver.core.Statement;
+
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.stress.generate.*;
 import org.apache.cassandra.stress.settings.StressSettings;
@@ -40,11 +40,13 @@ public class SchemaInsert extends SchemaStatement
 {
 
     private final BatchStatement.Type batchType;
+    private final Distribution batchSize;
 
     public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Distribution batchSize, RatioDistribution useRatio, Integer thriftId, PreparedStatement statement, ConsistencyLevel cl, BatchStatement.Type batchType)
     {
         super(timer, settings, new DataSpec(generator, seedManager, batchSize, useRatio), statement, thriftId, cl);
         this.batchType = batchType;
+        this.batchSize = batchSize;
     }
 
     private class JavaDriverRun extends Runner
@@ -67,29 +69,29 @@ public class SchemaInsert extends SchemaStatement
 
             rowCount += stmts.size();
 
-            // 65535 is max number of stmts per batch, so if we have more, we need to manually batch them
-            for (int j = 0 ; j < stmts.size() ; j += 65535)
+            BatchStatement batch = new BatchStatement(batchType);
+            int currentBatchSize = Math.min(getNextBatchSize(), 65535);
+            for (int j = 0 ; j < stmts.size() ; j++)
             {
-                List<BoundStatement> substmts = stmts.subList(j, Math.min(j + stmts.size(), j + 65535));
-                Statement stmt;
-                if (stmts.size() == 1)
+            	batch.add(stmts.get(j));
+                if(j%currentBatchSize==0 || j==stmts.size()-1) // We reached the batch size or the end of the statement list
                 {
-                    stmt = substmts.get(0);
+                	batch.setConsistencyLevel(JavaDriverClient.from(cl));
+                	client.getSession().execute(batch);
+                	batch.clear();
+                	currentBatchSize = Math.min(getNextBatchSize(), 65535);
                 }
-                else
-                {
-                    BatchStatement batch = new BatchStatement(batchType);
-                    batch.setConsistencyLevel(JavaDriverClient.from(cl));
-                    batch.addAll(substmts);
-                    stmt = batch;
-                }
-
-                client.getSession().execute(stmt);
             }
             return true;
         }
     }
 
+    private int getNextBatchSize()
+    {
+    	int nextBatchSize = (int) batchSize.next();
+    	return nextBatchSize>0?nextBatchSize:1;
+    }
+    
     private class ThriftRun extends Runner
     {
         final ThriftClient client;
