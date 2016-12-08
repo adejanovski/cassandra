@@ -29,7 +29,10 @@ import java.util.stream.Collectors;
 import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
+import com.datastax.driver.core.ResultSetFuture;
 import com.datastax.driver.core.Statement;
+import com.google.common.collect.Lists;
+
 import org.apache.cassandra.db.ColumnFamilyStore;
 import org.apache.cassandra.db.ConsistencyLevel;
 import org.apache.cassandra.io.sstable.StressCQLSSTableWriter;
@@ -45,29 +48,33 @@ public class SchemaInsert extends SchemaStatement
     private final String tableSchema;
     private final String insertStatement;
     private final BatchStatement.Type batchType;
+    private final Distribution batchSize;
 
-    public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Distribution batchSize, RatioDistribution useRatio, RatioDistribution rowPopulation, PreparedStatement statement, ConsistencyLevel cl, BatchStatement.Type batchType)
+    public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Distribution batchSize, Distribution partitions, RatioDistribution useRatio, RatioDistribution rowPopulation, PreparedStatement statement, ConsistencyLevel cl, BatchStatement.Type batchType)
     {
-        super(timer, settings, new DataSpec(generator, seedManager, batchSize, useRatio, rowPopulation), statement, statement.getVariables().asList().stream().map(d -> d.getName()).collect(Collectors.toList()), cl);
+        super(timer, settings, new DataSpec(generator, seedManager, partitions, useRatio, rowPopulation), statement, statement.getVariables().asList().stream().map(d -> d.getName()).collect(Collectors.toList()), cl);
         this.batchType = batchType;
         this.insertStatement = null;
         this.tableSchema = null;
+        this.batchSize = batchSize;
     }
 
     /**
      * Special constructor for offline use
      */
-    public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, RatioDistribution useRatio, RatioDistribution rowPopulation, String statement, String tableSchema)
+    public SchemaInsert(Timer timer, StressSettings settings, PartitionGenerator generator, SeedManager seedManager, Distribution batchSize, Distribution partitions, RatioDistribution useRatio, RatioDistribution rowPopulation, String statement, String tableSchema)
     {
         super(timer, settings, new DataSpec(generator, seedManager, new DistributionFixed(1), useRatio, rowPopulation), null, generator.getColumnNames(), ConsistencyLevel.ONE);
         this.batchType = BatchStatement.Type.UNLOGGED;
         this.insertStatement = statement;
         this.tableSchema = tableSchema;
+        this.batchSize = batchSize;
     }
 
     private class JavaDriverRun extends Runner
     {
         final JavaDriverClient client;
+        List<ResultSetFuture> resultSetFutures;
 
         private JavaDriverRun(JavaDriverClient client)
         {
@@ -77,6 +84,7 @@ public class SchemaInsert extends SchemaStatement
         public boolean run() throws Exception
         {
             List<BoundStatement> stmts = new ArrayList<>();
+            resultSetFutures = Lists.newArrayList();
             partitionCount = partitions.size();
 
             for (PartitionIterator iterator : partitions)
@@ -84,11 +92,10 @@ public class SchemaInsert extends SchemaStatement
                     stmts.add(bindRow(iterator.next()));
 
             rowCount += stmts.size();
-
-            // 65535 is max number of stmts per batch, so if we have more, we need to manually batch them
-            for (int j = 0 ; j < stmts.size() ; j += 65535)
+            int nextBatchSize = Math.min(getNextBatchSize(), 65535);
+            for (int j = 0 ; j < stmts.size() ; j += nextBatchSize)
             {
-                List<BoundStatement> substmts = stmts.subList(j, Math.min(j + stmts.size(), j + 65535));
+                List<BoundStatement> substmts = stmts.subList(j, Math.min(j + stmts.size(), j + Math.min(nextBatchSize, stmts.size()-j)));
                 Statement stmt;
                 if (stmts.size() == 1)
                 {
@@ -101,10 +108,33 @@ public class SchemaInsert extends SchemaStatement
                     batch.addAll(substmts);
                     stmt = batch;
                 }
-
-                client.getSession().execute(stmt);
+                
+                resultSetFutures.add(client.getSession().executeAsync(stmt));
+                
+                if(resultSetFutures.size()%100==0)
+                {
+                    // no more than 100 async queries at once
+                    waitForAsyncQueries();
+                }
             }
+            
+            waitForAsyncQueries();
+            
             return true;
+        }
+        
+        private int getNextBatchSize()
+        {
+            int nextBatchSize = (int) batchSize.next();
+            return nextBatchSize>0?nextBatchSize:1;
+        }
+
+        private void waitForAsyncQueries()
+        {            
+            for(ResultSetFuture resultSetFuture:resultSetFutures){
+                resultSetFuture.getUninterruptibly();
+            }    
+            resultSetFutures = Lists.newArrayList();
         }
     }
 

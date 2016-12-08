@@ -55,6 +55,7 @@ import org.apache.cassandra.stress.report.Timer;
 import org.apache.cassandra.stress.settings.*;
 import org.apache.cassandra.stress.util.JavaDriverClient;
 import org.apache.cassandra.stress.util.ResultLogger;
+import org.apache.commons.math3.distribution.UniformRealDistribution;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
 import org.yaml.snakeyaml.error.YAMLException;
@@ -85,6 +86,8 @@ public class StressProfile implements Serializable
     transient volatile RatioDistributionFactory rowPopulation;
     transient volatile PreparedStatement insertStatement;
     transient volatile List<ValidatingSchemaQuery.Factory> validationFactories;
+    
+    transient volatile Distribution batchSizes;
 
     transient volatile Map<String, SchemaQuery.ArgSelect> argSelects;
     transient volatile Map<String, PreparedStatement> queryStatements;
@@ -144,6 +147,7 @@ public class StressProfile implements Serializable
         queries = yaml.queries;
         tokenRangeQueries = yaml.token_range_queries;
         insert = yaml.insert;
+        batchSizes = new DistributionBoundApache(new UniformRealDistribution((double)1, (double)2), 1, 65535);
 
         extraSchemaDefinitions = yaml.extra_definitions;
 
@@ -458,6 +462,10 @@ public class StressProfile implements Serializable
         partitions = select(settings.insert.batchsize, "partitions", "fixed(1)", insert, OptionDistribution.BUILDER);
         selectchance = select(settings.insert.selectRatio, "select", "fixed(1)/1", insert, OptionRatioDistribution.BUILDER);
         rowPopulation = select(settings.insert.rowPopulationRatio, "row-population", "fixed(1)/1", insert, OptionRatioDistribution.BUILDER);
+        Distribution visits = settings.insert.visits.get();
+        double minBatchSize = selectchance.get().min() * partitions.get().minValue() * generator.minRowCount * (1d / visits.maxValue());
+        double maxBatchSize = selectchance.get().max() * partitions.get().maxValue() * generator.maxRowCount * (1d / visits.minValue());
+        this.batchSizes = new DistributionBoundApache(new UniformRealDistribution(minBatchSize, maxBatchSize + 1), (int) minBatchSize, (int) maxBatchSize);
 
         if (generator.maxRowCount > 100 * 1000 * 1000)
             System.err.printf("WARNING: You have defined a schema that permits very large partitions (%.0f max rows (>100M))%n", generator.maxRowCount);
@@ -467,8 +475,7 @@ public class StressProfile implements Serializable
         //CQLTableWriter requires the keyspace name be in the create statement
         String tableCreate = tableCql.replaceFirst("\\s+\"?"+tableName+"\"?\\s+", " \""+keyspaceName+"\".\""+tableName+"\" ");
 
-
-        return new SchemaInsert(timer, settings, generator, seedManager, selectchance.get(), rowPopulation.get(), statement, tableCreate);
+        return new SchemaInsert(timer, settings, generator, seedManager, this.batchSizes, partitions.get(), selectchance.get(), rowPopulation.get(), statement, tableCreate);
     }
 
     public SchemaInsert getInsert(Timer timer, PartitionGenerator generator, SeedManager seedManager, StressSettings settings)
@@ -575,7 +582,7 @@ public class StressProfile implements Serializable
                     // guarantee the vast majority of actions occur in these bounds
                     double minBatchSize = selectchance.get().min() * partitions.get().minValue() * generator.minRowCount * (1d / visits.maxValue());
                     double maxBatchSize = selectchance.get().max() * partitions.get().maxValue() * generator.maxRowCount * (1d / visits.minValue());
-
+                    batchSizes = new DistributionBoundApache(new UniformRealDistribution(minBatchSize, maxBatchSize + 1), (int) minBatchSize, (int) maxBatchSize);                    
                     if (generator.maxRowCount > 100 * 1000 * 1000)
                         System.err.printf("WARNING: You have defined a schema that permits very large partitions (%.0f max rows (>100M))%n", generator.maxRowCount);
                     if (batchType == BatchStatement.Type.LOGGED && maxBatchSize > 65535)
@@ -595,8 +602,8 @@ public class StressProfile implements Serializable
                 }
             }
         }
-
-        return new SchemaInsert(timer, settings, generator, seedManager, partitions.get(), selectchance.get(), rowPopulation.get(), insertStatement, settings.command.consistencyLevel, batchType);
+        
+        return new SchemaInsert(timer, settings, generator, seedManager, batchSizes, partitions.get(), selectchance.get(), rowPopulation.get(), insertStatement, settings.command.consistencyLevel, batchType);
     }
 
     public List<ValidatingSchemaQuery> getValidate(Timer timer, PartitionGenerator generator, SeedManager seedManager, StressSettings settings)
